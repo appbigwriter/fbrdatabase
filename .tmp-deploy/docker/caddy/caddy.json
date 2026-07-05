@@ -1,0 +1,18 @@
+{
+  "admin": {
+    "listen": ":2019"
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "bootstrap": {
+          "listen": [
+            ":80",
+            ":443"
+          ],
+          "routes": []
+        }
+      }
+    }
+  }
+}

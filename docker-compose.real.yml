@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: control-tower-postgres
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${CONTROL_TOWER_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${CONTROL_TOWER_POSTGRES_PASSWORD:?set CONTROL_TOWER_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${CONTROL_TOWER_POSTGRES_DB:-postgres}
+    ports:
+      - "127.0.0.1:${CONTROL_TOWER_POSTGRES_BIND_PORT:-5433}:5432"
+    volumes:
+      - control_tower_pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - control-tower-net
+
+  caddy:
+    image: caddy:2
+    container_name: control-tower-caddy
+    command: ["caddy", "run", "--config", "/etc/caddy/caddy.json"]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "127.0.0.1:2019:2019"
+    volumes:
+      - ./docker/caddy/caddy.json:/etc/caddy/caddy.json:ro
+      - control_tower_caddy_data:/data
+      - control_tower_caddy_config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - control-tower-net
+
+  minio-hot:
+    image: minio/minio:latest
+    container_name: control-tower-minio-hot
+    command: ["server", "/data", "--console-address", ":9001"]
+    env_file:
+      - .env
+    environment:
+      MINIO_ROOT_USER: ${CONTROL_TOWER_MINIO_ROOT_USER:?set CONTROL_TOWER_MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${CONTROL_TOWER_MINIO_ROOT_PASSWORD:?set CONTROL_TOWER_MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - ./.data/storage-hot:/data
+    networks:
+      - control-tower-net
+
+  minio-cold:
+    image: minio/minio:latest
+    container_name: control-tower-minio-cold
+    command: ["server", "/data", "--console-address", ":9101"]
+    env_file:
+      - .env
+    environment:
+      MINIO_ROOT_USER: ${CONTROL_TOWER_MINIO_ROOT_USER:?set CONTROL_TOWER_MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${CONTROL_TOWER_MINIO_ROOT_PASSWORD:?set CONTROL_TOWER_MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:9100:9000"
+      - "127.0.0.1:9101:9101"
+    volumes:
+      - ./.data/storage-cold:/data
+    networks:
+      - control-tower-net
+
+networks:
+  control-tower-net:
+    name: control-tower-net
+
+volumes:
+  control_tower_pgdata:
+  control_tower_caddy_data:
+  control_tower_caddy_config:

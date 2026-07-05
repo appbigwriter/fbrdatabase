@@ -1,0 +1,12 @@
+{
+  "name": "Revista Control Tower",
+  "slug": "revista-control-tower",
+  "subdomain": "revista.lab.fbr.news",
+  "databaseName": "revista_control_tower",
+  "ownerEmail": "admin@fbr.news",
+  "tokens": {
+    "service": "2030-01-01T00:00:00.000Z",
+    "anon": "2030-01-01T00:00:00.000Z",
+    "mcp": "2030-01-01T00:00:00.000Z"
+  }
+}

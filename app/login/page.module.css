@@ -1,0 +1,72 @@
+.shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+}
+
+.panel {
+  width: min(100%, 30rem);
+  padding: 2rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: var(--shadow);
+}
+
+.kicker {
+  margin: 0 0 0.6rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.78rem;
+}
+
+.panel h1 {
+  margin: 0 0 0.65rem;
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.copy {
+  margin: 0 0 1.5rem;
+  color: var(--muted);
+}
+
+.form {
+  display: grid;
+  gap: 1rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.field span {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.field input {
+  width: 100%;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--line);
+  background: rgba(248, 245, 236, 0.85);
+}
+
+.button {
+  padding: 0.95rem 1.1rem;
+  border: none;
+  background: var(--accent);
+  color: #fff8f2;
+}
+
+.button:disabled {
+  opacity: 0.72;
+}
+
+.error {
+  margin: 0;
+  color: #8c3118;
+}

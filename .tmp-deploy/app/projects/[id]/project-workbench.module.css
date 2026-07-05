@@ -1,0 +1,303 @@
+.page {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(191, 79, 47, 0.1), transparent 22rem),
+    linear-gradient(180deg, #faf5eb 0%, #efe6d8 100%);
+  color: var(--ink);
+}
+
+.header {
+  padding: 1.4rem 1.6rem;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.header p {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+}
+
+.headerNav {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.headerNav a {
+  color: var(--muted);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22rem;
+}
+
+.main {
+  padding: 1.5rem;
+  display: grid;
+  gap: 1.3rem;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.tile {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.tile span {
+  display: block;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.tile strong {
+  font-size: 1.2rem;
+}
+
+.section {
+  padding: 1.2rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-end;
+  margin-bottom: 1rem;
+}
+
+.sectionHeader h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sectionHeader p {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+}
+
+.sectionGrid {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.sqlEditor {
+  width: 100%;
+  min-height: 16rem;
+  border: 1px solid var(--line);
+  background: #191d1c;
+  color: #edf0ef;
+  padding: 1rem;
+  resize: vertical;
+}
+
+.toolbar {
+  display: flex;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 0.9rem;
+}
+
+.button {
+  border: none;
+  background: var(--accent);
+  color: #fff8f2;
+  padding: 0.85rem 1.1rem;
+}
+
+.ghost {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.warning {
+  color: var(--warn);
+}
+
+.results {
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.listRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.aside {
+  padding: 1.5rem;
+  border-left: 1px solid var(--line);
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  background: rgba(248, 245, 236, 0.76);
+}
+
+.form {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.field input,
+.field select {
+  border: 1px solid var(--line);
+  padding: 0.75rem 0.8rem;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.searchInput {
+  min-width: 16rem;
+  border: 1px solid var(--line);
+  padding: 0.75rem 0.8rem;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.inlineForm {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.historyBlock {
+  margin-top: 1.2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.historyItem {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.inlineCode {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: "Courier New", monospace;
+  font-size: 0.88rem;
+  color: #25312d;
+}
+
+.inlineLink {
+  display: inline-block;
+  margin-top: 0.35rem;
+  color: var(--accent);
+}
+
+.sortButton {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.pagination {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.actionGroup {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.secretPanel {
+  display: grid;
+  gap: 0.45rem;
+  margin: 1rem 0;
+  padding: 0.9rem;
+  border: 1px solid rgba(30, 122, 83, 0.2);
+  background: rgba(30, 122, 83, 0.08);
+}
+
+.uploadRow {
+  display: flex;
+  gap: 0.7rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1080px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .aside {
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+
+  .hero {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inlineForm {
+    width: 100%;
+  }
+
+  .searchInput {
+    width: 100%;
+    min-width: 0;
+  }
+}

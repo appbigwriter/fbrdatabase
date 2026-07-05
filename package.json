@@ -1,0 +1,36 @@
+{
+  "name": "fbr-control-tower",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CLI-first control plane foundation for the Control Tower PRD.",
+  "bin": {
+    "control-tower": "dist/bin/control-tower.js"
+  },
+  "scripts": {
+    "build": "npm run build:control-plane && npm run build:web",
+    "build:control-plane": "tsc -p tsconfig.build.json",
+    "build:web": "next build",
+    "dev": "npm run build:control-plane && next dev",
+    "start": "next start",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "lint": "node ./scripts/lint.mjs",
+    "test": "npm run build:control-plane && node --test dist/tests/**/*.test.js",
+    "control-tower": "node dist/bin/control-tower.js",
+    "stack:real:up": "docker compose -f docker-compose.real.yml up -d",
+    "stack:real:down": "docker compose -f docker-compose.real.yml down -v --remove-orphans",
+    "smoke:real": "node ./scripts/real-smoke.mjs"
+  },
+  "dependencies": {
+    "next": "^15.4.0",
+    "pg": "^8.16.3",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.6",
+    "@types/react": "19.2.17",
+    "typescript": "^5.8.3"
+  }
+}

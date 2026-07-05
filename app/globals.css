@@ -1,0 +1,93 @@
+@import url("https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@8..144,200..700&display=swap");
+
+:root {
+  --bg: #f3efe4;
+  --panel: #f8f5ec;
+  --ink: #18221f;
+  --muted: #66736f;
+  --line: rgba(24, 34, 31, 0.14);
+  --accent: #bf4f2f;
+  --accent-soft: rgba(191, 79, 47, 0.12);
+  --ok: #1e7a53;
+  --warn: #9c5c13;
+  --shadow: 0 24px 80px rgba(24, 34, 31, 0.08);
+  --font-sans: "Google Sans Flex", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(191, 79, 47, 0.12), transparent 24rem),
+    linear-gradient(180deg, #f8f4ea 0%, #efe8da 100%);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 200;
+  line-height: 1.45;
+}
+
+body {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-sans);
+}
+
+h1 {
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+h2 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+p,
+li,
+span,
+label,
+td,
+th,
+input,
+select,
+textarea,
+button,
+a {
+  font-size: 16px;
+  font-weight: 200;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}

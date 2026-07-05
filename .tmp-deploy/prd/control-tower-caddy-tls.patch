@@ -1,0 +1,325 @@
+--- a/packages/control-tower/src/types.ts
++++ b/packages/control-tower/src/types.ts
+@@ -225,3 +225,12 @@
+   routes: RouteRecord[];
+   auditLogs: AuditEntry[];
+ }
++
++/**
++ * Publishes the full set of project routes to the routing layer (Caddy).
++ * Implementations rebuild the complete config from the snapshot and push it,
++ * so the operation is idempotent and safe to call after every provision/deprovision.
++ */
++export interface RoutePublisher {
++  publishRoutes(snapshot: MetadataSnapshot): Promise<void>;
++}
+--- a/packages/control-tower/src/services.ts
++++ b/packages/control-tower/src/services.ts
+@@ -15,6 +15,7 @@
+   ProjectManifest,
+   ProjectRecord,
+   RouteRecord,
++  RoutePublisher,
+   TlsMode,
+   TlsStrategy,
+   TokenRecord,
+@@ -25,6 +26,7 @@
+ export interface ProvisioningDependencies {
+   databaseRuntime: DatabaseRuntime;
+   authRuntime: AuthRuntime;
++  routePublisher?: RoutePublisher;
+   clock?: () => string;
+   randomId?: () => string;
+ }
+@@ -118,6 +120,12 @@
+       const activeProject: ProjectRecord = { ...project, status: "active", updatedAt: this.now() };
+       await this.repository.upsertProject(activeProject);
+       await this.audit(project.id, "project.provision", "completed", { tokens: tokens.length });
++
++      // Publish the live routing config so the new subdomain actually serves traffic.
++      // Best-effort: a routing-layer hiccup must not tear down a correctly provisioned
++      // database + auth container. Failures are audited and can be retried via republishRoutes().
++      await this.publishRoutes(project.id, manifest.subdomain);
++
+       return activeProject;
+     } catch (error) {
+       for (const step of completedSteps.reverse()) {
+@@ -150,6 +158,8 @@
+     await this.dependencies.authRuntime.deleteInstance(projectId, manifest);
+     await this.dependencies.databaseRuntime.deleteDatabase(projectId, manifest);
+     await this.repository.removeProject(projectId);
++    // Re-publish so the removed subdomain stops being served.
++    await this.publishRoutes(projectId, project.subdomain);
+     await this.audit(projectId, "project.deprovision", "completed", { slug: project.slug });
+   }
+ 
+@@ -168,6 +178,22 @@
+       createdAt: this.now()
+     });
+   }
++
++  private async publishRoutes(projectId: string | null, subdomain: string): Promise<void> {
++    if (!this.dependencies.routePublisher) {
++      return;
++    }
++    try {
++      const snapshot = await this.repository.snapshot();
++      await this.dependencies.routePublisher.publishRoutes(snapshot);
++      await this.audit(projectId, "route.publish", "completed", { subdomain });
++    } catch (error) {
++      await this.audit(projectId, "route.publish", "failed", {
++        subdomain,
++        message: error instanceof Error ? error.message : "Unknown route publish failure"
++      });
++    }
++  }
+ }
+ 
+ export function issueInitialTokens(
+--- a/packages/control-tower/src/caddy.ts
++++ b/packages/control-tower/src/caddy.ts
+@@ -2,11 +2,18 @@
+ import http from "node:http";
+ import https from "node:https";
+ import path from "node:path";
+-import type { CaddyRouteConfig, MetadataSnapshot } from "./types.js";
++import type { CaddyRouteConfig, MetadataSnapshot, RoutePublisher } from "./types.js";
+ 
+ export interface CaddyPublishOptions {
+   adminOrigin: string;
++  /** HTTP listen address, e.g. ":80". */
+   listenAddress: string;
++  /** HTTPS listen address, e.g. ":443". Only used when tlsEnabled is true. */
++  httpsListenAddress?: string;
++  /** When true, Caddy binds HTTPS and issues per-subdomain certificates automatically. */
++  tlsEnabled?: boolean;
++  /** ACME contact email used for Let's Encrypt in production (recommended when tlsEnabled). */
++  acmeEmail?: string;
+ }
+ 
+ export function buildCaddyRouteConfig(
+@@ -36,6 +43,45 @@
+     };
+   });
+ 
++  const tlsEnabled = options.tlsEnabled ?? false;
++  const httpsListenAddress = options.httpsListenAddress ?? ":443";
++
++  const server: Record<string, unknown> = tlsEnabled
++    ? {
++        // Bind both HTTP (for ACME HTTP-01 + redirects) and HTTPS.
++        // automatic_https stays enabled so Caddy issues a certificate per
++        // subdomain listed in the route host matchers.
++        listen: [options.listenAddress, httpsListenAddress],
++        routes
++      }
++    : {
++        // Local/dev: no ACME, plain HTTP only.
++        listen: [options.listenAddress],
++        automatic_https: { disable: true },
++        routes
++      };
++
++  const apps: Record<string, unknown> = {
++    http: {
++      servers: {
++        control_tower: server
++      }
++    }
++  };
++
++  if (tlsEnabled && options.acmeEmail) {
++    // Set the ACME contact email so Let's Encrypt issuance is non-interactive in production.
++    apps.tls = {
++      automation: {
++        policies: [
++          {
++            issuers: [{ module: "acme", email: options.acmeEmail }]
++          }
++        ]
++      }
++    };
++  }
++
+   return {
+     adminOrigin: options.adminOrigin,
+     routeCount: routes.length,
+@@ -43,19 +89,7 @@
+       admin: {
+         listen: options.adminOrigin.replace(/^https?:\/\//, "")
+       },
+-      apps: {
+-        http: {
+-          servers: {
+-            control_tower: {
+-              listen: [options.listenAddress],
+-              automatic_https: {
+-                disable: true
+-              },
+-              routes
+-            }
+-          }
+-        }
+-      }
++      apps
+     }
+   };
+ }
+@@ -106,3 +140,32 @@
+     request.end();
+   });
+ }
++
++/**
++ * RoutePublisher that pushes the full config to a running Caddy via its admin API.
++ * Used in real mode so provisioning a project makes its subdomain live immediately.
++ */
++export class CaddyAdminRoutePublisher implements RoutePublisher {
++  constructor(private readonly options: CaddyPublishOptions) {}
++
++  async publishRoutes(snapshot: MetadataSnapshot): Promise<void> {
++    const config = buildCaddyRouteConfig(snapshot, this.options);
++    await publishCaddyConfig(config);
++  }
++}
++
++/**
++ * RoutePublisher that writes the generated config to a file instead of calling Caddy.
++ * Handy for local inspection / dev without a live admin API.
++ */
++export class CaddyFileRoutePublisher implements RoutePublisher {
++  constructor(
++    private readonly filePath: string,
++    private readonly options: CaddyPublishOptions
++  ) {}
++
++  async publishRoutes(snapshot: MetadataSnapshot): Promise<void> {
++    const config = buildCaddyRouteConfig(snapshot, this.options);
++    await writeCaddyConfigFile(this.filePath, config);
++  }
++}
+--- a/packages/control-tower/src/config.ts
++++ b/packages/control-tower/src/config.ts
+@@ -17,6 +17,7 @@
+   FakeDatabaseRuntime,
+   ProvisioningService
+ } from "./services.js";
++import { CaddyAdminRoutePublisher } from "./caddy.js";
+ 
+ export interface ControlTowerApp {
+   repository: MetadataRepository;
+@@ -51,6 +52,9 @@
+   metadataSchemaFile: string;
+   caddyAdminOrigin: string;
+   caddyListenAddress: string;
++  caddyHttpsListenAddress: string;
++  caddyTlsEnabled: boolean;
++  caddyAcmeEmail?: string;
+   storageRoot: string;
+   importWorkspaceRoot: string;
+   backupRoot: string;
+@@ -92,6 +96,9 @@
+       path.join(root, "packages", "control-tower", "sql", "001_control_plane.sql"),
+     caddyAdminOrigin: env.CONTROL_TOWER_CADDY_ADMIN_ORIGIN ?? "http://127.0.0.1:2019",
+     caddyListenAddress: env.CONTROL_TOWER_CADDY_LISTEN_ADDRESS ?? ":80",
++    caddyHttpsListenAddress: env.CONTROL_TOWER_CADDY_HTTPS_LISTEN_ADDRESS ?? ":443",
++    caddyTlsEnabled: env.CONTROL_TOWER_CADDY_TLS_ENABLED === "true",
++    caddyAcmeEmail: env.CONTROL_TOWER_CADDY_ACME_EMAIL,
+     storageRoot: env.CONTROL_TOWER_STORAGE_ROOT ?? path.join(root, ".data", "storage"),
+     importWorkspaceRoot: env.CONTROL_TOWER_IMPORT_ROOT ?? path.join(root, ".data", "imports"),
+     backupRoot: env.CONTROL_TOWER_BACKUP_ROOT ?? path.join(root, ".data", "backups"),
+@@ -150,12 +157,20 @@
+     config.dockerBaseUrl || config.dockerSocketPath
+       ? new RealAuthRuntime(new DockerEngineClient(dockerConfig), dockerConfig, gotrueConfig)
+       : new DockerCliAuthRuntime(dockerConfig, gotrueConfig);
++  const routePublisher = new CaddyAdminRoutePublisher({
++    adminOrigin: config.caddyAdminOrigin,
++    listenAddress: config.caddyListenAddress,
++    httpsListenAddress: config.caddyHttpsListenAddress,
++    tlsEnabled: config.caddyTlsEnabled,
++    acmeEmail: config.caddyAcmeEmail
++  });
+   const provisioningService = new ProvisioningService(repository, {
+     databaseRuntime: new RealDatabaseRuntime(adminClient, {
+       adminDatabaseUrl: config.superPostgresUrl,
+       projectHost: config.projectHost
+     }),
+-    authRuntime
++    authRuntime,
++    routePublisher
+   });
+ 
+   return {
+--- a/tests/control-tower.test.ts
++++ b/tests/control-tower.test.ts
+@@ -20,7 +20,7 @@
+   runSmokeTest,
+   createBucket
+ } from "../packages/control-tower/src/index.js";
+-import type { ProjectManifest } from "../packages/control-tower/src/index.js";
++import type { MetadataSnapshot, ProjectManifest } from "../packages/control-tower/src/index.js";
+ 
+ const manifest: ProjectManifest = {
+   name: "Control Tower Project",
+@@ -221,3 +221,61 @@
+   let index = 0;
+   return () => `id-${++index}`;
+ }
++
++test("provisionProject publishes routes via the injected routePublisher", async () => {
++  const repository = new MetadataRepository(new InMemoryMetadataDriver());
++  const published: MetadataSnapshot[] = [];
++  const service = new ProvisioningService(repository, {
++    databaseRuntime: new FakeDatabaseRuntime(),
++    authRuntime: new FakeAuthRuntime(),
++    routePublisher: {
++      async publishRoutes(snapshot) {
++        published.push(snapshot);
++      }
++    },
++    clock: () => "2026-06-30T00:00:00.000Z",
++    randomId: sequenceId()
++  });
++
++  await service.provisionProject(manifest);
++
++  assert.equal(published.length, 1);
++  assert.equal(
++    published[0].routes.some((route) => route.subdomain === manifest.subdomain),
++    true
++  );
++
++  const snapshot = await repository.snapshot();
++  const audit = snapshot.auditLogs.find((entry) => entry.action === "route.publish");
++  assert.equal(audit?.phase, "completed");
++});
++
++test("caddy route config enables https and acme issuance when tlsEnabled", async () => {
++  const repository = new MetadataRepository(new InMemoryMetadataDriver());
++  const service = new ProvisioningService(repository, {
++    databaseRuntime: new FakeDatabaseRuntime(),
++    authRuntime: new FakeAuthRuntime(),
++    clock: () => "2026-06-30T00:00:00.000Z",
++    randomId: sequenceId()
++  });
++  await service.provisionProject(manifest);
++  const snapshot = await repository.snapshot();
++
++  const caddy = buildCaddyRouteConfig(snapshot, {
++    adminOrigin: "http://127.0.0.1:2019",
++    listenAddress: ":80",
++    httpsListenAddress: ":443",
++    tlsEnabled: true,
++    acmeEmail: "admin@fbr.news"
++  });
++
++  const apps = caddy.config.apps as {
++    http: { servers: { control_tower: { listen: string[]; automatic_https?: { disable: boolean } } } };
++    tls?: { automation: { policies: Array<{ issuers: Array<{ module: string; email?: string }> }> } };
++  };
++
++  assert.equal(apps.http.servers.control_tower.listen.includes(":443"), true);
++  assert.equal(apps.http.servers.control_tower.automatic_https, undefined);
++  assert.equal(apps.tls?.automation.policies[0].issuers[0].module, "acme");
++  assert.equal(apps.tls?.automation.policies[0].issuers[0].email, "admin@fbr.news");
++});
