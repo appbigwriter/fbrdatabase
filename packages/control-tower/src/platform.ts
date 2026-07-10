@@ -682,7 +682,7 @@ export async function importSupabaseProject(input: {
       `SOURCE_URL=${sourceUrl}`,
       "-e",
       `TARGET_URL=${targetUrl}`,
-      "postgres:16",
+      "postgres:17",
       "sh",
       "-lc",
       dumpCommand

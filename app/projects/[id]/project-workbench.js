@@ -71,6 +71,10 @@ export default function ProjectWorkbench({ initialDetail, session }) {
       query.set("filter", tableFilter.trim());
     }
     const response = await fetch(`/api/projects/${detail.project.id}/tables?${query.toString()}`);
+    if (!response.ok) {
+      setTables([]);
+      return;
+    }
     setTables(await response.json());
   }
 

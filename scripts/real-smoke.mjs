@@ -37,7 +37,9 @@ const env = sanitizeEnv({
 });
 
 await run(npmBin, ["run", "build"]);
-await run("docker", ["compose", "-f", "docker-compose.real.yml", "up", "-d"]);
+if (process.env.SKIP_DOCKER !== "true") {
+  await run("docker", ["compose", "-f", "docker-compose.real.yml", "up", "-d"]);
+}
 await waitForMetadata();
 await run(nodeBin, ["dist/bin/control-tower.js", "metadata", "migrate"], { env });
 const manifestPath = await createSmokeManifest();
@@ -56,9 +58,25 @@ try {
 
 const smokeJson = JSON.parse(smoke.stdout.trim());
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-const response = await fetch(`${toLoopbackBaseUrl(caddyListenAddress)}/health`, {
-  headers: { Host: manifest.subdomain }
-});
+let response;
+let lastFetchError = "";
+for (let attempt = 1; attempt <= 60; attempt += 1) {
+  try {
+    response = await fetch(`${toLoopbackBaseUrl(caddyListenAddress)}/health`, {
+      headers: { Host: manifest.subdomain }
+    });
+    if (response.ok || response.status === 200 || response.status === 307 || response.status === 308) {
+      break;
+    }
+    await sleep(1000);
+  } catch (error) {
+    lastFetchError = error instanceof Error ? error.message : String(error);
+    await sleep(1000);
+  }
+}
+if (!response) {
+  throw new Error(`Failed to fetch health check from Caddy after 60 attempts: ${lastFetchError}`);
+}
 
 console.log(
   JSON.stringify(
@@ -137,6 +155,9 @@ function quoteForCmd(value) {
 }
 
 function toLoopbackBaseUrl(listenAddress) {
+  if (process.env.SKIP_DOCKER === "true") {
+    return "http://caddy";
+  }
   const { host, port } = parseListenAddress(listenAddress);
   const baseHost = host && host !== "0.0.0.0" ? host : "127.0.0.1";
   return `http://${baseHost}${port === 80 ? "" : `:${port}`}`;
