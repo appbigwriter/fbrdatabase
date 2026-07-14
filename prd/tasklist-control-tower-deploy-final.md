@@ -69,7 +69,7 @@ Gate:
   - patch Caddy/TLS
   - ajuste do painel no Caddy
   - template configuravel de subdominio
-  - `Dockerfile.control-tower`
+  - `Dockerfile`
 
 Gate:
 - `package.json` existe no VPS
@@ -152,7 +152,7 @@ services:
   control-tower-app:
     build:
       context: .
-      dockerfile: Dockerfile.control-tower
+      dockerfile: Dockerfile
     container_name: control-tower-app
     restart: unless-stopped
     env_file:
