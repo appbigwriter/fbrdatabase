@@ -34,4 +34,4 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/examples ./examples
 COPY --from=builder /app/.env.example ./.env.example
 EXPOSE 3000
-CMD ["npm", "run", "start"]
+CMD ["sh", "-c", "node dist/bin/control-tower.js metadata migrate && npm run start"]

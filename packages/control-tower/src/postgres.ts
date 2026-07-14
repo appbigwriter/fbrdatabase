@@ -25,7 +25,7 @@ export class PostgresClient implements SqlQueryable {
   }
 
   async query<T = Record<string, unknown>>(text: string, values: unknown[] = []): Promise<{ rows: T[] }> {
-    const result = await this.pool.query<T>(text, values);
+    const result = values.length > 0 ? await this.pool.query<T>(text, values) : await this.pool.query<T>(text);
     return { rows: result.rows };
   }
 
