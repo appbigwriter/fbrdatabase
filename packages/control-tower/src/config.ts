@@ -1,8 +1,10 @@
 import path from "node:path";
 import {
   DockerCliAuthRuntime,
+  DockerCliPostgrestRuntime,
   DockerEngineClient,
   RealAuthRuntime,
+  RealPostgrestRuntime,
   type DockerRuntimeConfig,
   type GoTrueEnvConfig
 } from "./docker.js";
@@ -38,6 +40,10 @@ export interface ControlTowerConfig {
   dockerSocketPath?: string;
   gotrueImage: string;
   authPort: number;
+  postgrestImage: string;
+  postgrestPort: number;
+  postgrestDbUriTemplate: string;
+  storageUpstream: string;
   secretDirectory: string;
   dockerNetworkName?: string;
   dockerHostGatewayName: string;
@@ -81,6 +87,12 @@ export function loadControlTowerConfig(env: NodeJS.ProcessEnv = process.env): Co
     dockerSocketPath: env.CONTROL_TOWER_DOCKER_SOCKET_PATH,
     gotrueImage: env.CONTROL_TOWER_GOTRUE_IMAGE ?? "supabase/auth:v2.192.0",
     authPort: Number(env.CONTROL_TOWER_GOTRUE_PORT ?? "9999"),
+    postgrestImage: env.CONTROL_TOWER_POSTGREST_IMAGE ?? "postgrest/postgrest:v12.2.3",
+    postgrestPort: Number(env.CONTROL_TOWER_POSTGREST_PORT ?? "3000"),
+    postgrestDbUriTemplate:
+      env.CONTROL_TOWER_POSTGREST_DB_URI_TEMPLATE ??
+      "postgres://authenticator:{authenticatorPassword}@postgres:5432/{databaseName}",
+    storageUpstream: env.CONTROL_TOWER_STORAGE_UPSTREAM ?? "",
     secretDirectory: env.CONTROL_TOWER_SECRET_DIR ?? path.join(root, ".data", "secrets"),
     dockerNetworkName: env.CONTROL_TOWER_DOCKER_NETWORK_NAME,
     dockerHostGatewayName: env.CONTROL_TOWER_DOCKER_HOST_GATEWAY_NAME ?? "host.docker.internal",
@@ -142,6 +154,8 @@ export async function createControlTowerApp(config: ControlTowerConfig): Promise
     socketPath: config.dockerSocketPath,
     gotrueImage: config.gotrueImage,
     authPort: config.authPort,
+    postgrestImage: config.postgrestImage,
+    postgrestPort: config.postgrestPort,
     secretDirectory: config.secretDirectory,
     networkName: config.dockerNetworkName,
     hostGatewayName: config.dockerHostGatewayName,
@@ -158,10 +172,15 @@ export async function createControlTowerApp(config: ControlTowerConfig): Promise
   };
 
   const repository = new MetadataRepository(new PostgresMetadataDriver(metadataClient));
+  const dockerEngine = new DockerEngineClient(dockerConfig);
   const authRuntime =
     config.dockerBaseUrl || config.dockerSocketPath
-      ? new RealAuthRuntime(new DockerEngineClient(dockerConfig), dockerConfig, gotrueConfig)
+      ? new RealAuthRuntime(dockerEngine, dockerConfig, gotrueConfig)
       : new DockerCliAuthRuntime(dockerConfig, gotrueConfig);
+  const postgrestRuntime =
+    config.dockerBaseUrl || config.dockerSocketPath
+      ? new RealPostgrestRuntime(dockerEngine, dockerConfig)
+      : new DockerCliPostgrestRuntime(dockerConfig);
   const routePublisher = new CaddyAdminRoutePublisher({
     adminOrigin: config.caddyAdminOrigin,
     listenAddress: config.caddyListenAddress,
@@ -178,6 +197,9 @@ export async function createControlTowerApp(config: ControlTowerConfig): Promise
       secretDirectory: config.secretDirectory
     }),
     authRuntime,
+    postgrestRuntime,
+    postgrestDbUriTemplate: config.postgrestDbUriTemplate,
+    storageUpstream: config.storageUpstream || undefined,
     routePublisher
   });
 

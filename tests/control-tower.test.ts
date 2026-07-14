@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   FakeAuthRuntime,
   FakeDatabaseRuntime,
+  FakePostgrestRuntime,
   InMemoryMetadataDriver,
   MetadataRepository,
   ProvisioningService,
@@ -18,10 +19,14 @@ import {
   buildMcpProfile,
   buildSecurityChecklist,
   createControlTowerApp,
+  createSupabaseKeySet,
+  generateJwtSecret,
   publishCaddyConfig,
   defineTlsStrategy,
   loadControlTowerConfig,
   runSmokeTest,
+  signJwt,
+  verifyJwt,
   createBucket
 } from "../packages/control-tower/src/index.js";
 import type { MetadataSnapshot, ProjectManifest } from "../packages/control-tower/src/index.js";
@@ -352,6 +357,132 @@ test("real auth runtime attaches GoTrue containers to the configured docker netw
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("supabase-compatible API keys are HS256 JWTs with the right role claim", () => {
+  const secret = generateJwtSecret();
+  const ref = "project-ref-123";
+  const keys = createSupabaseKeySet(secret, ref);
+
+  const anonPayload = verifyJwt(keys.anonKey, secret);
+  const servicePayload = verifyJwt(keys.serviceRoleKey, secret);
+
+  assert.equal(anonPayload?.role, "anon");
+  assert.equal(servicePayload?.role, "service_role");
+  assert.equal(anonPayload?.iss, "supabase");
+  assert.equal(anonPayload?.ref, ref);
+  assert.equal(keys.anonKey.split(".").length, 3);
+  assert.equal(keys.anonKey !== keys.serviceRoleKey, true);
+  assert.equal(verifyJwt(keys.anonKey, "wrong-secret"), null);
+});
+
+test("supabase key set regenerated from the same secret is stable", () => {
+  const secret = generateJwtSecret();
+  const first = createSupabaseKeySet(secret, "ref");
+  const second = createSupabaseKeySet(secret, "ref");
+  assert.equal(first.anonKey, second.anonKey);
+  assert.equal(first.serviceRoleKey, second.serviceRoleKey);
+});
+
+test("provisionProject provisions PostgREST and records the rest target when a runtime is provided", async () => {
+  const repository = new MetadataRepository(new InMemoryMetadataDriver());
+  const postgrest = new FakePostgrestRuntime();
+  const service = new ProvisioningService(repository, {
+    databaseRuntime: new FakeDatabaseRuntime(),
+    authRuntime: new FakeAuthRuntime(),
+    postgrestRuntime: postgrest,
+    postgrestDbUriTemplate: "postgres://authenticator:{authenticatorPassword}@postgres:5432/{databaseName}",
+    storageUpstream: "http://storage-api:4000",
+    clock: () => "2026-07-01T00:00:00.000Z",
+    randomId: sequenceId()
+  });
+
+  const project = await service.provisionProject(manifest);
+  const snapshot = await repository.snapshot();
+
+  assert.equal(snapshot.postgrestInstances.length, 1);
+  assert.equal(snapshot.postgrestInstances[0].projectId, project.id);
+  assert.equal(snapshot.postgrestInstances[0].dbSchema, "public");
+  assert.equal(snapshot.postgrestInstances[0].anonRole, "anon");
+  assert.equal(snapshot.routes[0].restTarget, snapshot.postgrestInstances[0].upstreamUrl);
+  assert.equal(snapshot.routes[0].storageTarget, "http://storage-api:4000");
+  assert.match(postgrest.events.join(","), /createInstance/);
+});
+
+test("caddy route config serves /auth/v1, /rest/v1 and /storage/v1 via a subroute per project", async () => {
+  const repository = new MetadataRepository(new InMemoryMetadataDriver());
+  const service = new ProvisioningService(repository, {
+    databaseRuntime: new FakeDatabaseRuntime(),
+    authRuntime: new FakeAuthRuntime(),
+    postgrestRuntime: new FakePostgrestRuntime(),
+    postgrestDbUriTemplate: "postgres://authenticator:{authenticatorPassword}@postgres:5432/{databaseName}",
+    storageUpstream: "http://storage-api:4000",
+    clock: () => "2026-07-01T00:00:00.000Z",
+    randomId: sequenceId()
+  });
+  await service.provisionProject(manifest);
+  const snapshot = await repository.snapshot();
+
+  const caddy = buildCaddyRouteConfig(snapshot, {
+    adminOrigin: "http://127.0.0.1:2019",
+    listenAddress: ":80"
+  });
+  const server = (
+    caddy.config.apps as {
+      http: { servers: { control_tower: { routes: Array<Record<string, unknown>> } } };
+    }
+  ).http.servers.control_tower.routes;
+
+  const projectRoute = server.find((route) => {
+    const match = route.match as Array<{ host?: string[] }> | undefined;
+    return Boolean(match?.[0]?.host?.includes(manifest.subdomain));
+  });
+  assert.equal(Boolean(projectRoute), true);
+
+  const handle = projectRoute!.handle as Array<{ handler: string; routes?: Array<Record<string, unknown>> }>;
+  assert.equal(handle[0].handler, "subroute");
+  const subRoutes = handle[0].routes!;
+  const paths = subRoutes
+    .map((sub) => ((sub.match as Array<{ path?: string[] }> | undefined)?.[0]?.path ?? []).join(","))
+    .join("|");
+  assert.match(paths, /\/auth\/v1/);
+  assert.match(paths, /\/rest\/v1/);
+  assert.match(paths, /\/storage\/v1/);
+});
+
+test("provisioning without PostgREST leaves restTarget null and degrades to a single proxy", async () => {
+  const repository = new MetadataRepository(new InMemoryMetadataDriver());
+  const service = new ProvisioningService(repository, {
+    databaseRuntime: new FakeDatabaseRuntime(),
+    authRuntime: new FakeAuthRuntime(),
+    clock: () => "2026-07-01T00:00:00.000Z",
+    randomId: sequenceId()
+  });
+  await service.provisionProject(manifest);
+  const snapshot = await repository.snapshot();
+  assert.equal(snapshot.postgrestInstances.length, 0);
+  assert.equal(snapshot.routes[0].restTarget, null);
+  assert.equal(snapshot.routes[0].storageTarget, null);
+});
+
+test("deprovisionProject removes the PostgREST instance", async () => {
+  const repository = new MetadataRepository(new InMemoryMetadataDriver());
+  const postgrest = new FakePostgrestRuntime();
+  const service = new ProvisioningService(repository, {
+    databaseRuntime: new FakeDatabaseRuntime(),
+    authRuntime: new FakeAuthRuntime(),
+    postgrestRuntime: postgrest,
+    postgrestDbUriTemplate: "postgres://authenticator:{authenticatorPassword}@postgres:5432/{databaseName}",
+    clock: () => "2026-07-01T00:00:00.000Z",
+    randomId: sequenceId()
+  });
+
+  const project = await service.provisionProject(manifest);
+  await service.deprovisionProject(project.id, manifest.slug);
+  const snapshot = await repository.snapshot();
+
+  assert.equal(snapshot.postgrestInstances.length, 0);
+  assert.match(postgrest.events.join(","), /deleteInstance/);
 });
 
 function sequenceId() {

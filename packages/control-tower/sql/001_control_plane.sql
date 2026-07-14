@@ -54,7 +54,20 @@ CREATE TABLE IF NOT EXISTS routes (
   subdomain TEXT NOT NULL UNIQUE,
   auth_target TEXT NOT NULL,
   database_target TEXT NOT NULL,
+  rest_target TEXT,
+  storage_target TEXT,
   tls_mode TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS postgrest_instances (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  container_id TEXT NOT NULL UNIQUE,
+  rest_url TEXT NOT NULL,
+  upstream_url TEXT NOT NULL,
+  db_schema TEXT NOT NULL,
+  anon_role TEXT NOT NULL,
+  status TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL
 );
 
@@ -68,3 +81,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 ALTER TABLE auth_instances ADD COLUMN IF NOT EXISTS upstream_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE auth_instances ADD COLUMN IF NOT EXISTS jwt_secret_ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE routes ADD COLUMN IF NOT EXISTS rest_target TEXT;
+ALTER TABLE routes ADD COLUMN IF NOT EXISTS storage_target TEXT;

@@ -37,9 +37,32 @@ export default function ProjectWorkbench({ initialDetail, session }) {
   const [tokenForm, setTokenForm] = useState(tokenDefaults);
   const [tokenState, setTokenState] = useState({ busy: false, error: "", issued: null });
   const [backupState, setBackupState] = useState({ busy: false, error: "", created: null });
+  const [copied, setCopied] = useState("");
 
   const destructive = useMemo(() => /\b(drop|truncate|delete|alter)\b/i.test(sql), [sql]);
   const sqlHistory = detail.sqlHistory ?? [];
+  const apiKeys = detail.apiKeys ?? null;
+
+  async function copyText(key, value) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(key);
+      setTimeout(() => setCopied(""), 2000);
+    } catch {
+      setCopied("");
+    }
+  }
+
+  function buildEnvSnippet() {
+    if (!apiKeys) {
+      return "";
+    }
+    return [
+      `NEXT_PUBLIC_SUPABASE_URL=${apiKeys.projectUrl}`,
+      `NEXT_PUBLIC_SUPABASE_ANON_KEY=${apiKeys.anonKey}`,
+      `SUPABASE_SERVICE_ROLE_KEY=${apiKeys.serviceRoleKey}`
+    ].join("\n");
+  }
 
   useEffect(() => {
     loadTables();
@@ -246,9 +269,52 @@ export default function ProjectWorkbench({ initialDetail, session }) {
           <section className={styles.hero}>
             <div className={styles.tile}><span>Subdominio</span><strong>{detail.project.subdomain}</strong></div>
             <div className={styles.tile}><span>Auth</span><strong>{detail.auth?.status ?? "indisponivel"}</strong></div>
+            <div className={styles.tile}><span>API REST</span><strong>{detail.postgrest?.status ?? "indisponivel"}</strong></div>
             <div className={styles.tile}><span>Tokens</span><strong>{detail.tokens.length}</strong></div>
-            <div className={styles.tile}><span>Buckets</span><strong>{detail.buckets.length}</strong></div>
           </section>
+
+          {apiKeys && apiKeys.anonKey ? (
+            <section className={styles.section} id="api-keys">
+              <div className={styles.sectionHeader}>
+                <div>
+                  <h2>Chaves de API (compativel com Supabase)</h2>
+                  <p>Use estas chaves no seu app com <code>createClient(url, anonKey)</code> sem mudar o codigo.</p>
+                </div>
+                <button className={styles.button} onClick={() => copyText("env", buildEnvSnippet())}>
+                  {copied === "env" ? "Copiado!" : "Copiar .env"}
+                </button>
+              </div>
+              <div className={styles.list}>
+                <div className={styles.listRow}>
+                  <div>
+                    <strong>Project URL</strong>
+                    <div className={styles.muted}>{apiKeys.projectUrl}</div>
+                  </div>
+                  <button className={`${styles.button} ${styles.ghost}`} onClick={() => copyText("url", apiKeys.projectUrl)}>
+                    {copied === "url" ? "Copiado!" : "Copiar"}
+                  </button>
+                </div>
+                <div className={styles.listRow}>
+                  <div>
+                    <strong>anon key (publica)</strong>
+                    <code className={styles.inlineCode}>{truncateKey(apiKeys.anonKey)}</code>
+                  </div>
+                  <button className={`${styles.button} ${styles.ghost}`} onClick={() => copyText("anon", apiKeys.anonKey)}>
+                    {copied === "anon" ? "Copiado!" : "Copiar"}
+                  </button>
+                </div>
+                <div className={styles.listRow}>
+                  <div>
+                    <strong>service_role key (secreta)</strong>
+                    <code className={styles.inlineCode}>{truncateKey(apiKeys.serviceRoleKey)}</code>
+                  </div>
+                  <button className={`${styles.button} ${styles.ghost}`} onClick={() => copyText("service", apiKeys.serviceRoleKey)}>
+                    {copied === "service" ? "Copiado!" : "Copiar"}
+                  </button>
+                </div>
+              </div>
+            </section>
+          ) : null}
 
           <section className={styles.section} id="sql">
             <div className={styles.sectionHeader}>
@@ -643,4 +709,12 @@ function stringifyCell(value) {
     return JSON.stringify(value);
   }
   return String(value);
+}
+
+function truncateKey(value) {
+  const text = String(value ?? "");
+  if (text.length <= 48) {
+    return text;
+  }
+  return `${text.slice(0, 24)}…${text.slice(-20)}`;
 }

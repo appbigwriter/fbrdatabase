@@ -24,28 +24,8 @@ export function buildCaddyRouteConfig(
   snapshot: MetadataSnapshot,
   options: CaddyPublishOptions
 ): CaddyRouteConfig {
-  const routes: Array<Record<string, unknown>> = snapshot.routes.map((route) => {
-    const upstream = new URL(route.authTarget);
-    const dial = upstream.port ? `${upstream.hostname}:${upstream.port}` : upstream.hostname;
-    const handle: Record<string, unknown>[] = [];
-
-    if (upstream.pathname && upstream.pathname !== "/") {
-      handle.push({
-        handler: "rewrite",
-        strip_path_prefix: upstream.pathname
-      });
-    }
-
-    handle.push({
-      handler: "reverse_proxy",
-      upstreams: [{ dial }]
-    });
-
-    return {
-      match: [{ host: [route.subdomain] }],
-      handle
-    };
-  });
+  const projectRoutes = buildProjectRoutes(snapshot);
+  const routes = projectRoutes;
 
   if (options.panelDomain && options.panelUpstream) {
     const upstream = new URL(options.panelUpstream);
@@ -55,7 +35,7 @@ export function buildCaddyRouteConfig(
     if (upstream.pathname && upstream.pathname !== "/") {
       panelHandle.push({
         handler: "rewrite",
-        strip_path_prefix: upstream.pathname
+        strip_path_prefix: upstream.pathname.replace(/\/+$/, "")
       });
     }
 
@@ -116,6 +96,54 @@ export function buildCaddyRouteConfig(
       apps
     }
   };
+}
+
+const AUTH_PATH_PREFIX = "/auth/v1";
+const REST_PATH_PREFIX = "/rest/v1";
+const STORAGE_PATH_PREFIX = "/storage/v1";
+
+function buildProjectRoutes(snapshot: MetadataSnapshot): Array<Record<string, unknown>> {
+  return snapshot.routes.map((route) => {
+    const subRoutes: Array<Record<string, unknown>> = [];
+
+    if (route.authTarget) {
+      subRoutes.push({
+        match: [{ path: [`${AUTH_PATH_PREFIX}/*`, AUTH_PATH_PREFIX] }],
+        handle: [
+          { handler: "rewrite", strip_path_prefix: AUTH_PATH_PREFIX },
+          ...reverseProxyHandler(route.authTarget)
+        ]
+      });
+    }
+
+    if (route.restTarget) {
+      subRoutes.push({
+        match: [{ path: [`${REST_PATH_PREFIX}/*`, REST_PATH_PREFIX] }],
+        handle: [
+          { handler: "rewrite", strip_path_prefix: REST_PATH_PREFIX },
+          ...reverseProxyHandler(route.restTarget)
+        ]
+      });
+    }
+
+    if (route.storageTarget) {
+      subRoutes.push({
+        match: [{ path: [`${STORAGE_PATH_PREFIX}/*`, STORAGE_PATH_PREFIX] }],
+        handle: reverseProxyHandler(route.storageTarget)
+      });
+    }
+
+    return {
+      match: [{ host: [route.subdomain] }],
+      handle: subRoutes.length > 0 ? [{ handler: "subroute", routes: subRoutes }] : reverseProxyHandler(route.authTarget)
+    };
+  });
+}
+
+function reverseProxyHandler(target: string): Array<Record<string, unknown>> {
+  const upstream = new URL(target);
+  const dial = upstream.port ? `${upstream.hostname}:${upstream.port}` : upstream.hostname;
+  return [{ handler: "reverse_proxy", upstreams: [{ dial }] }];
 }
 
 export async function writeCaddyConfigFile(filePath: string, config: CaddyRouteConfig): Promise<string> {

@@ -4,6 +4,7 @@ export * from "./store.js";
 export * from "./services.js";
 export * from "./postgres.js";
 export * from "./docker.js";
+export * from "./jwt.js";
 export * from "./config.js";
 export * from "./caddy.js";
 export * from "./smoke.js";

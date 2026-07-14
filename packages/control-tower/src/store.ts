@@ -6,6 +6,7 @@ import type {
   BucketRecord,
   DatabaseRecord,
   MetadataSnapshot,
+  PostgrestInstanceRecord,
   ProjectRecord,
   RouteRecord,
   TokenRecord
@@ -21,6 +22,7 @@ export interface MetadataDriver {
   removeProject(projectId: string): Promise<void>;
   upsertDatabase(database: DatabaseRecord): Promise<void>;
   upsertAuthInstance(authInstance: AuthInstanceRecord): Promise<void>;
+  upsertPostgrestInstance(instance: PostgrestInstanceRecord): Promise<void>;
   upsertRoute(route: RouteRecord): Promise<void>;
   upsertBucket(bucket: BucketRecord): Promise<void>;
   appendTokens(tokens: TokenRecord[]): Promise<void>;
@@ -32,6 +34,7 @@ const emptySnapshot = (): MetadataSnapshot => ({
   projects: [],
   databases: [],
   authInstances: [],
+  postgrestInstances: [],
   tokens: [],
   buckets: [],
   routes: [],
@@ -59,6 +62,10 @@ export class MetadataRepository {
 
   async upsertAuthInstance(authInstance: AuthInstanceRecord): Promise<void> {
     await this.driver.upsertAuthInstance(authInstance);
+  }
+
+  async upsertPostgrestInstance(instance: PostgrestInstanceRecord): Promise<void> {
+    await this.driver.upsertPostgrestInstance(instance);
   }
 
   async upsertRoute(route: RouteRecord): Promise<void> {
@@ -97,6 +104,9 @@ export class InMemoryMetadataDriver implements MetadataDriver {
     this.snapshotValue.projects = this.snapshotValue.projects.filter((item) => item.id !== projectId);
     this.snapshotValue.databases = this.snapshotValue.databases.filter((item) => item.projectId !== projectId);
     this.snapshotValue.authInstances = this.snapshotValue.authInstances.filter((item) => item.projectId !== projectId);
+    this.snapshotValue.postgrestInstances = this.snapshotValue.postgrestInstances.filter(
+      (item) => item.projectId !== projectId
+    );
     this.snapshotValue.tokens = this.snapshotValue.tokens.filter((item) => item.projectId !== projectId);
     this.snapshotValue.buckets = this.snapshotValue.buckets.filter((item) => item.projectId !== projectId);
     this.snapshotValue.routes = this.snapshotValue.routes.filter((item) => item.projectId !== projectId);
@@ -110,6 +120,14 @@ export class InMemoryMetadataDriver implements MetadataDriver {
     this.snapshotValue.authInstances = upsertBy(
       this.snapshotValue.authInstances,
       authInstance,
+      (item) => item.projectId
+    );
+  }
+
+  async upsertPostgrestInstance(instance: PostgrestInstanceRecord): Promise<void> {
+    this.snapshotValue.postgrestInstances = upsertBy(
+      this.snapshotValue.postgrestInstances,
+      instance,
       (item) => item.projectId
     );
   }
@@ -155,6 +173,7 @@ export class JsonFileMetadataDriver implements MetadataDriver {
     snapshot.projects = snapshot.projects.filter((item) => item.id !== projectId);
     snapshot.databases = snapshot.databases.filter((item) => item.projectId !== projectId);
     snapshot.authInstances = snapshot.authInstances.filter((item) => item.projectId !== projectId);
+    snapshot.postgrestInstances = snapshot.postgrestInstances.filter((item) => item.projectId !== projectId);
     snapshot.tokens = snapshot.tokens.filter((item) => item.projectId !== projectId);
     snapshot.buckets = snapshot.buckets.filter((item) => item.projectId !== projectId);
     snapshot.routes = snapshot.routes.filter((item) => item.projectId !== projectId);
@@ -170,6 +189,12 @@ export class JsonFileMetadataDriver implements MetadataDriver {
   async upsertAuthInstance(authInstance: AuthInstanceRecord): Promise<void> {
     const snapshot = await this.load();
     snapshot.authInstances = upsertBy(snapshot.authInstances, authInstance, (item) => item.projectId);
+    await this.save(snapshot);
+  }
+
+  async upsertPostgrestInstance(instance: PostgrestInstanceRecord): Promise<void> {
+    const snapshot = await this.load();
+    snapshot.postgrestInstances = upsertBy(snapshot.postgrestInstances, instance, (item) => item.projectId);
     await this.save(snapshot);
   }
 
@@ -226,10 +251,11 @@ export class PostgresMetadataDriver implements MetadataDriver {
   constructor(private readonly db: SqlQueryable) {}
 
   async snapshot(): Promise<MetadataSnapshot> {
-    const [projects, databases, authInstances, tokens, buckets, routes, auditLogs] = await Promise.all([
+    const [projects, databases, authInstances, postgrestInstances, tokens, buckets, routes, auditLogs] = await Promise.all([
       this.db.query<ProjectRow>("SELECT * FROM projects ORDER BY created_at ASC"),
       this.db.query<DatabaseRow>("SELECT * FROM databases ORDER BY created_at ASC"),
       this.db.query<AuthInstanceRow>("SELECT * FROM auth_instances ORDER BY created_at ASC"),
+      this.db.query<PostgrestInstanceRow>("SELECT * FROM postgrest_instances ORDER BY created_at ASC"),
       this.db.query<TokenRow>("SELECT * FROM tokens ORDER BY created_at ASC"),
       this.db.query<BucketRow>("SELECT * FROM buckets ORDER BY created_at ASC"),
       this.db.query<RouteRow>("SELECT * FROM routes ORDER BY created_at ASC"),
@@ -240,6 +266,7 @@ export class PostgresMetadataDriver implements MetadataDriver {
       projects: projects.rows.map(mapProjectRow),
       databases: databases.rows.map(mapDatabaseRow),
       authInstances: authInstances.rows.map(mapAuthInstanceRow),
+      postgrestInstances: postgrestInstances.rows.map(mapPostgrestInstanceRow),
       tokens: tokens.rows.map(mapTokenRow),
       buckets: buckets.rows.map(mapBucketRow),
       routes: routes.rows.map(mapRouteRow),
@@ -282,14 +309,15 @@ export class PostgresMetadataDriver implements MetadataDriver {
 
   async upsertAuthInstance(authInstance: AuthInstanceRecord): Promise<void> {
     await this.db.query(
-      `INSERT INTO auth_instances (project_id, container_id, auth_url, upstream_url, public_key_id, private_key_ref, status, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO auth_instances (project_id, container_id, auth_url, upstream_url, public_key_id, private_key_ref, jwt_secret_ref, status, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (project_id) DO UPDATE SET
          container_id = EXCLUDED.container_id,
          auth_url = EXCLUDED.auth_url,
          upstream_url = EXCLUDED.upstream_url,
          public_key_id = EXCLUDED.public_key_id,
          private_key_ref = EXCLUDED.private_key_ref,
+         jwt_secret_ref = EXCLUDED.jwt_secret_ref,
          status = EXCLUDED.status,
          created_at = EXCLUDED.created_at`,
       [
@@ -299,23 +327,60 @@ export class PostgresMetadataDriver implements MetadataDriver {
         authInstance.upstreamUrl,
         authInstance.publicKeyId,
         authInstance.privateKeyRef,
+        authInstance.jwtSecretRef,
         authInstance.status,
         authInstance.createdAt
       ]
     );
   }
 
+  async upsertPostgrestInstance(instance: PostgrestInstanceRecord): Promise<void> {
+    await this.db.query(
+      `INSERT INTO postgrest_instances (project_id, container_id, rest_url, upstream_url, db_schema, anon_role, status, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (project_id) DO UPDATE SET
+         container_id = EXCLUDED.container_id,
+         rest_url = EXCLUDED.rest_url,
+         upstream_url = EXCLUDED.upstream_url,
+         db_schema = EXCLUDED.db_schema,
+         anon_role = EXCLUDED.anon_role,
+         status = EXCLUDED.status,
+         created_at = EXCLUDED.created_at`,
+      [
+        instance.projectId,
+        instance.containerId,
+        instance.restUrl,
+        instance.upstreamUrl,
+        instance.dbSchema,
+        instance.anonRole,
+        instance.status,
+        instance.createdAt
+      ]
+    );
+  }
+
   async upsertRoute(route: RouteRecord): Promise<void> {
     await this.db.query(
-      `INSERT INTO routes (project_id, subdomain, auth_target, database_target, tls_mode, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO routes (project_id, subdomain, auth_target, database_target, rest_target, storage_target, tls_mode, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (project_id) DO UPDATE SET
          subdomain = EXCLUDED.subdomain,
          auth_target = EXCLUDED.auth_target,
          database_target = EXCLUDED.database_target,
+         rest_target = EXCLUDED.rest_target,
+         storage_target = EXCLUDED.storage_target,
          tls_mode = EXCLUDED.tls_mode,
          created_at = EXCLUDED.created_at`,
-      [route.projectId, route.subdomain, route.authTarget, route.databaseTarget, route.tlsMode, route.createdAt]
+      [
+        route.projectId,
+        route.subdomain,
+        route.authTarget,
+        route.databaseTarget,
+        route.restTarget,
+        route.storageTarget,
+        route.tlsMode,
+        route.createdAt
+      ]
     );
   }
 
@@ -392,7 +457,19 @@ interface AuthInstanceRow {
   upstream_url: string;
   public_key_id: string;
   private_key_ref: string;
+  jwt_secret_ref: string;
   status: AuthInstanceRecord["status"];
+  created_at: string | Date;
+}
+
+interface PostgrestInstanceRow {
+  project_id: string;
+  container_id: string;
+  rest_url: string;
+  upstream_url: string;
+  db_schema: string;
+  anon_role: string;
+  status: PostgrestInstanceRecord["status"];
   created_at: string | Date;
 }
 
@@ -422,6 +499,8 @@ interface RouteRow {
   subdomain: string;
   auth_target: string;
   database_target: string;
+  rest_target: string | null;
+  storage_target: string | null;
   tls_mode: RouteRecord["tlsMode"];
   created_at: string | Date;
 }
@@ -466,6 +545,20 @@ function mapAuthInstanceRow(row: AuthInstanceRow): AuthInstanceRecord {
     upstreamUrl: row.upstream_url,
     publicKeyId: row.public_key_id,
     privateKeyRef: row.private_key_ref,
+    jwtSecretRef: row.jwt_secret_ref ?? "",
+    status: row.status,
+    createdAt: toIso(row.created_at)
+  };
+}
+
+function mapPostgrestInstanceRow(row: PostgrestInstanceRow): PostgrestInstanceRecord {
+  return {
+    projectId: row.project_id,
+    containerId: row.container_id,
+    restUrl: row.rest_url,
+    upstreamUrl: row.upstream_url,
+    dbSchema: row.db_schema,
+    anonRole: row.anon_role,
     status: row.status,
     createdAt: toIso(row.created_at)
   };
@@ -502,6 +595,8 @@ function mapRouteRow(row: RouteRow): RouteRecord {
     subdomain: row.subdomain,
     authTarget: row.auth_target,
     databaseTarget: row.database_target,
+    restTarget: row.rest_target ?? null,
+    storageTarget: row.storage_target ?? null,
     tlsMode: row.tls_mode,
     createdAt: toIso(row.created_at)
   };

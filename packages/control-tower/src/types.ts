@@ -18,6 +18,7 @@ export interface ProjectManifest {
   subdomain: string;
   databaseName: string;
   ownerEmail: string;
+  jwtSecret?: string;
   tokens: Record<TokenScope, string>;
 }
 
@@ -47,6 +48,18 @@ export interface AuthInstanceRecord {
   upstreamUrl: string;
   publicKeyId: string;
   privateKeyRef: string;
+  jwtSecretRef: string;
+  status: "ready" | "failed";
+  createdAt: string;
+}
+
+export interface PostgrestInstanceRecord {
+  projectId: string;
+  containerId: string;
+  restUrl: string;
+  upstreamUrl: string;
+  dbSchema: string;
+  anonRole: string;
   status: "ready" | "failed";
   createdAt: string;
 }
@@ -77,8 +90,18 @@ export interface RouteRecord {
   subdomain: string;
   authTarget: string;
   databaseTarget: string;
+  restTarget: string | null;
+  storageTarget: string | null;
   tlsMode: TlsMode;
   createdAt: string;
+}
+
+export interface ProjectApiKeys {
+  projectId: string;
+  projectUrl: string;
+  anonKey: string;
+  serviceRoleKey: string;
+  jwtSecretRef: string;
 }
 
 export interface CaddyRouteConfig {
@@ -220,6 +243,7 @@ export interface MetadataSnapshot {
   projects: ProjectRecord[];
   databases: DatabaseRecord[];
   authInstances: AuthInstanceRecord[];
+  postgrestInstances: PostgrestInstanceRecord[];
   tokens: TokenRecord[];
   buckets: BucketRecord[];
   routes: RouteRecord[];

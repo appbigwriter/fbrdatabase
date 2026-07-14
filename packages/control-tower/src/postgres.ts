@@ -119,6 +119,49 @@ export class RealDatabaseRuntime implements DatabaseRuntime {
     await this.db.query(`DROP ROLE IF EXISTS ${quoteIdentifier(writerRole)}`);
     await this.db.query(`DROP ROLE IF EXISTS ${quoteIdentifier(readerRole)}`);
   }
+
+  async createSupabaseRoles(
+    _projectId: string,
+    manifest: ProjectManifest
+  ): Promise<{ authenticatorPassword: string }> {
+    const databaseName = assertIdentifier(manifest.databaseName, "databaseName");
+    const authenticatorPassword = randomPassword();
+    const databaseUrl = replaceDatabaseName(this.config.adminDatabaseUrl, databaseName);
+    const client = new PostgresClient(databaseUrl);
+
+    try {
+      await client.query(`DO $$ BEGIN
+        CREATE ROLE ${quoteIdentifier("anon")} NOLOGIN;
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+      await client.query(`DO $$ BEGIN
+        CREATE ROLE ${quoteIdentifier("authenticated")} NOLOGIN;
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+      await client.query(`DO $$ BEGIN
+        CREATE ROLE ${quoteIdentifier("service_role")} NOLOGIN BYPASSRLS;
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+      await client.query(`DO $$ BEGIN
+        CREATE ROLE ${quoteIdentifier("authenticator")} LOGIN PASSWORD '${escapeLiteral(authenticatorPassword)}' NOINHERIT;
+      EXCEPTION WHEN duplicate_object THEN
+        ALTER ROLE ${quoteIdentifier("authenticator")} LOGIN PASSWORD '${escapeLiteral(authenticatorPassword)}';
+      END $$`);
+
+      await client.query(`GRANT ${quoteIdentifier("anon")}, ${quoteIdentifier("authenticated")}, ${quoteIdentifier("service_role")} TO ${quoteIdentifier("authenticator")}`);
+      await client.query(`GRANT USAGE ON SCHEMA public TO ${quoteIdentifier("anon")}, ${quoteIdentifier("authenticated")}, ${quoteIdentifier("service_role")}`);
+      await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${quoteIdentifier("anon")}, ${quoteIdentifier("authenticated")}`);
+      await client.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${quoteIdentifier("anon")}, ${quoteIdentifier("authenticated")}`);
+      await client.query(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${quoteIdentifier("service_role")}`);
+      await client.query(`GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${quoteIdentifier("service_role")}`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${quoteIdentifier("anon")}, ${quoteIdentifier("authenticated")}`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${quoteIdentifier("anon")}, ${quoteIdentifier("authenticated")}`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO ${quoteIdentifier("service_role")}`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO ${quoteIdentifier("service_role")}`);
+
+      await writeRoleSecret(this.config.secretDirectory, manifest.slug, "authenticator", "authenticator", authenticatorPassword);
+    } finally {
+      await client.close();
+    }
+    return { authenticatorPassword };
+  }
 }
 
 export async function applyMetadataSchema(config: MetadataDatabaseConfig): Promise<void> {
@@ -163,7 +206,7 @@ function escapeLiteral(value: string): string {
 async function writeRoleSecret(
   secretDirectory: string | undefined,
   slug: string,
-  accessMode: "writer" | "reader",
+  accessMode: "writer" | "reader" | "authenticator",
   roleName: string,
   password: string
 ): Promise<void> {

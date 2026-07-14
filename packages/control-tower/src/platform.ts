@@ -16,11 +16,14 @@ import {
 } from "./services.js";
 import { createControlTowerApp, loadControlTowerConfig } from "./config.js";
 import { PostgresClient } from "./postgres.js";
+import { createSupabaseKeySet } from "./jwt.js";
 import type {
   BucketRecord,
   ImportReport,
   IssuedTokenSecret,
   MetadataSnapshot,
+  PostgrestInstanceRecord,
+  ProjectApiKeys,
   ProjectBackupRecord,
   ProjectManifest,
   ProjectRecord,
@@ -69,11 +72,17 @@ export async function getProjectDetail(projectId: string) {
       throw new Error(`Project ${projectId} not found`);
     }
 
+    const auth = snapshot.authInstances.find((item) => item.projectId === projectId) ?? null;
+    const postgrest = snapshot.postgrestInstances.find((item) => item.projectId === projectId) ?? null;
+    const route = snapshot.routes.find((item) => item.projectId === projectId) ?? null;
+
     return {
       project,
       database: snapshot.databases.find((item) => item.projectId === projectId) ?? null,
-      auth: snapshot.authInstances.find((item) => item.projectId === projectId) ?? null,
-      route: snapshot.routes.find((item) => item.projectId === projectId) ?? null,
+      auth,
+      postgrest,
+      route,
+      apiKeys: await buildProjectApiKeys(project, auth?.jwtSecretRef ?? "", route),
       tokens: snapshot.tokens.filter((item) => item.projectId === projectId),
       buckets: snapshot.buckets.filter((item) => item.projectId === projectId),
       sqlHistory: buildSqlHistory(snapshot, projectId),
@@ -82,6 +91,47 @@ export async function getProjectDetail(projectId: string) {
       importReport: buildImportReport(projectId)
     };
   });
+}
+
+export async function getProjectApiKeys(projectId: string): Promise<ProjectApiKeys | null> {
+  return withControlTowerApp(async (app) => {
+    const snapshot = await app.repository.snapshot();
+    const project = snapshot.projects.find((item) => item.id === projectId);
+    if (!project) {
+      return null;
+    }
+    const auth = snapshot.authInstances.find((item) => item.projectId === projectId) ?? null;
+    const route = snapshot.routes.find((item) => item.projectId === projectId) ?? null;
+    return buildProjectApiKeys(project, auth?.jwtSecretRef ?? "", route);
+  });
+}
+
+async function buildProjectApiKeys(
+  project: ProjectRecord,
+  jwtSecretRef: string,
+  route: RouteRecord | null | undefined
+): Promise<ProjectApiKeys> {
+  const jwtSecret = await readJwtSecret(jwtSecretRef);
+  const keys = createSupabaseKeySet(jwtSecret, project.id);
+  return {
+    projectId: project.id,
+    projectUrl: `https://${project.subdomain}`,
+    anonKey: keys.anonKey,
+    serviceRoleKey: keys.serviceRoleKey,
+    jwtSecretRef
+  };
+}
+
+async function readJwtSecret(jwtSecretRef: string): Promise<string> {
+  if (!jwtSecretRef) {
+    return "";
+  }
+  try {
+    const content = JSON.parse(await readFile(jwtSecretRef, "utf8")) as { secret?: string };
+    return content.secret ?? "";
+  } catch {
+    return "";
+  }
 }
 
 export async function provisionProjectFromManifest(manifest: ProjectManifest) {
@@ -646,6 +696,7 @@ export async function importSupabaseProject(input: {
   databaseName: string;
   ownerEmail: string;
   sourceConnectionString: string;
+  jwtSecret?: string;
   verifyEmail?: string;
   verifyPassword?: string;
 }) {
@@ -655,6 +706,7 @@ export async function importSupabaseProject(input: {
     subdomain: input.subdomain,
     databaseName: input.databaseName,
     ownerEmail: input.ownerEmail,
+    jwtSecret: input.jwtSecret,
     tokens: {
       service: "2030-01-01T00:00:00.000Z",
       anon: "2030-01-01T00:00:00.000Z",
@@ -682,15 +734,13 @@ export async function importSupabaseProject(input: {
       `SOURCE_URL=${sourceUrl}`,
       "-e",
       `TARGET_URL=${targetUrl}`,
-      "postgres:17",
+      "postgres:16",
       "sh",
       "-lc",
       dumpCommand
     ],
     config.importWorkspaceRoot
   );
-
-  await createSupabaseCompatRoles(target.adminConnectionString);
 
   let loginCheck = false;
   if (input.verifyEmail && input.verifyPassword) {
@@ -704,8 +754,9 @@ export async function importSupabaseProject(input: {
     project,
     report: {
       ...buildImportReport(project.id),
+      jwtSecretPorted: Boolean(input.jwtSecret),
       preservedPasswordLogin: input.verifyEmail && input.verifyPassword ? loginCheck : false
-    } satisfies ImportReport
+    } satisfies ImportReport & { jwtSecretPorted: boolean }
   };
 }
 
@@ -796,20 +847,6 @@ async function getProjectConnectionWithinApp(app: Awaited<ReturnType<typeof crea
     ),
     adminConnectionString: config.superPostgresUrl ?? buildProjectConnectionString(config.projectDatabaseUrlTemplate, "postgres")
   };
-}
-
-async function createSupabaseCompatRoles(adminConnectionString: string) {
-  const client = new PostgresClient(adminConnectionString);
-  try {
-    await client.query('CREATE ROLE authenticated');
-  } catch {}
-  try {
-    await client.query('CREATE ROLE anon');
-  } catch {}
-  try {
-    await client.query('CREATE ROLE service_role');
-  } catch {}
-  await client.close();
 }
 
 async function verifyImportedLogin(authUrl: string, email: string, password: string) {

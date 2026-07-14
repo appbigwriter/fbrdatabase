@@ -15,6 +15,8 @@ export interface DockerRuntimeConfig {
   baseUrl?: string;
   gotrueImage: string;
   authPort: number;
+  postgrestImage?: string;
+  postgrestPort?: number;
   secretDirectory: string;
   networkName?: string;
   hostGatewayName?: string;
@@ -41,8 +43,8 @@ export class RealAuthRuntime implements AuthRuntime {
   async createInstance(
     projectId: string,
     manifest: ProjectManifest
-  ): Promise<{ containerId: string; authUrl: string; upstreamUrl: string; publicKeyId: string; privateKeyRef: string }> {
-    const keyMaterial = await createProjectKeyMaterial(this.dockerConfig.secretDirectory, manifest.slug);
+  ): Promise<{ containerId: string; authUrl: string; upstreamUrl: string; publicKeyId: string; privateKeyRef: string; jwtSecret: string; jwtSecretRef: string }> {
+    const keyMaterial = await createProjectKeyMaterial(this.dockerConfig.secretDirectory, manifest.slug, manifest.jwtSecret);
     const authUrl = interpolateTemplate(this.gotrueConfig.externalUrlTemplate, manifest);
     const siteUrl = interpolateTemplate(this.gotrueConfig.siteUrlTemplate, manifest);
     const dbUrl = interpolateTemplate(this.gotrueConfig.dbDatabaseUrlTemplate, manifest);
@@ -60,7 +62,7 @@ export class RealAuthRuntime implements AuthRuntime {
       "GOTRUE_JWT_ADMIN_ROLES=admin,service_role",
       `GOTRUE_JWT_AUD=${this.gotrueConfig.jwtAudience}`,
       `GOTRUE_JWT_EXP=${this.gotrueConfig.jwtExpirySeconds}`,
-      `GOTRUE_JWT_SECRET=${keyMaterial.legacySecret}`,
+      `GOTRUE_JWT_SECRET=${keyMaterial.jwtSecret}`,
       `GOTRUE_SITE_URL=${siteUrl}`,
       `GOTRUE_URI_ALLOW_LIST=${this.gotrueConfig.redirectAllowList}`
     ];
@@ -91,7 +93,9 @@ export class RealAuthRuntime implements AuthRuntime {
       authUrl,
       upstreamUrl,
       publicKeyId: keyMaterial.kid,
-      privateKeyRef: keyMaterial.privateKeyRef
+      privateKeyRef: keyMaterial.privateKeyRef,
+      jwtSecret: keyMaterial.jwtSecret,
+      jwtSecretRef: keyMaterial.jwtSecretRef
     };
   }
 
@@ -110,8 +114,8 @@ export class DockerCliAuthRuntime implements AuthRuntime {
   async createInstance(
     projectId: string,
     manifest: ProjectManifest
-  ): Promise<{ containerId: string; authUrl: string; upstreamUrl: string; publicKeyId: string; privateKeyRef: string }> {
-    const keyMaterial = await createProjectKeyMaterial(this.dockerConfig.secretDirectory, manifest.slug);
+  ): Promise<{ containerId: string; authUrl: string; upstreamUrl: string; publicKeyId: string; privateKeyRef: string; jwtSecret: string; jwtSecretRef: string }> {
+    const keyMaterial = await createProjectKeyMaterial(this.dockerConfig.secretDirectory, manifest.slug, manifest.jwtSecret);
     const authUrl = interpolateTemplate(this.gotrueConfig.externalUrlTemplate, manifest);
     const siteUrl = interpolateTemplate(this.gotrueConfig.siteUrlTemplate, manifest);
     const dbUrl = interpolateTemplate(this.gotrueConfig.dbDatabaseUrlTemplate, manifest);
@@ -128,7 +132,7 @@ export class DockerCliAuthRuntime implements AuthRuntime {
       "GOTRUE_JWT_ADMIN_ROLES=admin,service_role",
       `GOTRUE_JWT_AUD=${this.gotrueConfig.jwtAudience}`,
       `GOTRUE_JWT_EXP=${this.gotrueConfig.jwtExpirySeconds}`,
-      `GOTRUE_JWT_SECRET=${keyMaterial.legacySecret}`,
+      `GOTRUE_JWT_SECRET=${keyMaterial.jwtSecret}`,
       `GOTRUE_SITE_URL=${siteUrl}`,
       `GOTRUE_URI_ALLOW_LIST=${this.gotrueConfig.redirectAllowList}`
     ];
@@ -164,12 +168,138 @@ export class DockerCliAuthRuntime implements AuthRuntime {
       authUrl,
       upstreamUrl,
       publicKeyId: keyMaterial.kid,
-      privateKeyRef: keyMaterial.privateKeyRef
+      privateKeyRef: keyMaterial.privateKeyRef,
+      jwtSecret: keyMaterial.jwtSecret,
+      jwtSecretRef: keyMaterial.jwtSecretRef
     };
   }
 
   async deleteInstance(_projectId: string, manifest: ProjectManifest): Promise<void> {
     const containerName = `gotrue-${manifest.slug}`;
+    try {
+      await execFileAsync("docker", ["rm", "-f", containerName], { windowsHide: true });
+    } catch (error) {
+      const typed = error as { stderr?: string };
+      if (typed.stderr?.includes("No such container")) {
+        return;
+      }
+      throw error;
+    }
+  }
+}
+
+export interface PostgrestContext {
+  dbUri: string;
+  jwtSecret: string;
+  dbSchema: string;
+  anonRole: string;
+}
+
+export interface PostgrestProvisionResult {
+  containerId: string;
+  restUrl: string;
+  upstreamUrl: string;
+}
+
+export interface PostgrestRuntime {
+  createInstance(projectId: string, manifest: ProjectManifest, context: PostgrestContext): Promise<PostgrestProvisionResult>;
+  deleteInstance(projectId: string, manifest: ProjectManifest): Promise<void>;
+}
+
+const DEFAULT_POSTGREST_IMAGE = "postgrest/postgrest:v12.2.3";
+const DEFAULT_POSTGREST_PORT = 3000;
+
+export class RealPostgrestRuntime implements PostgrestRuntime {
+  constructor(
+    private readonly dockerClient: DockerEngineClient,
+    private readonly dockerConfig: DockerRuntimeConfig
+  ) {}
+
+  async createInstance(
+    _projectId: string,
+    manifest: ProjectManifest,
+    context: PostgrestContext
+  ): Promise<PostgrestProvisionResult> {
+    const containerName = `postgrest-${manifest.slug}`;
+    const port = this.dockerConfig.postgrestPort ?? DEFAULT_POSTGREST_PORT;
+    const environment = [
+      `PGRST_DB_URI=${context.dbUri}`,
+      `PGRST_DB_SCHEMA=${context.dbSchema}`,
+      `PGRST_DB_ANON_ROLE=${context.anonRole}`,
+      `PGRST_JWT_SECRET=${context.jwtSecret}`,
+      `PGRST_DB_EXTRA_SEARCH_PATH=public`,
+      "PGRST_LOG_LEVEL=info"
+    ];
+
+    const containerId = await this.dockerClient.createContainer({
+      name: containerName,
+      Image: this.dockerConfig.postgrestImage ?? DEFAULT_POSTGREST_IMAGE,
+      Env: environment,
+      ExposedPorts: { [`${port}/tcp`]: {} },
+      HostConfig: {
+        RestartPolicy: { Name: "unless-stopped" },
+        ...(this.dockerConfig.networkName ? { NetworkMode: this.dockerConfig.networkName } : {})
+      },
+      ...(this.dockerConfig.networkName
+        ? {
+            NetworkingConfig: {
+              EndpointsConfig: {
+                [this.dockerConfig.networkName]: {}
+              }
+            }
+          }
+        : {})
+    });
+    await this.dockerClient.startContainer(containerId);
+
+    const restUrl = `https://${manifest.subdomain}/rest/v1`;
+    const upstreamUrl = `http://${containerName}:${port}`;
+    return { containerId, restUrl, upstreamUrl };
+  }
+
+  async deleteInstance(_projectId: string, manifest: ProjectManifest): Promise<void> {
+    const containerName = `postgrest-${manifest.slug}`;
+    await this.dockerClient.removeContainer(containerName);
+  }
+}
+
+export class DockerCliPostgrestRuntime implements PostgrestRuntime {
+  constructor(private readonly dockerConfig: DockerRuntimeConfig) {}
+
+  async createInstance(
+    _projectId: string,
+    manifest: ProjectManifest,
+    context: PostgrestContext
+  ): Promise<PostgrestProvisionResult> {
+    const containerName = `postgrest-${manifest.slug}`;
+    const port = this.dockerConfig.postgrestPort ?? DEFAULT_POSTGREST_PORT;
+    const environment = [
+      `PGRST_DB_URI=${context.dbUri}`,
+      `PGRST_DB_SCHEMA=${context.dbSchema}`,
+      `PGRST_DB_ANON_ROLE=${context.anonRole}`,
+      `PGRST_JWT_SECRET=${context.jwtSecret}`,
+      `PGRST_DB_EXTRA_SEARCH_PATH=public`,
+      "PGRST_LOG_LEVEL=info"
+    ];
+
+    const args = ["run", "-d", "--name", containerName, "--restart", "unless-stopped"];
+    if (this.dockerConfig.networkName) {
+      args.push("--network", this.dockerConfig.networkName);
+    }
+    for (const entry of environment) {
+      args.push("-e", entry);
+    }
+    args.push(this.dockerConfig.postgrestImage ?? DEFAULT_POSTGREST_IMAGE);
+
+    const { stdout } = await execFileAsync("docker", args, { windowsHide: true });
+    const containerId = stdout.trim();
+    const restUrl = `https://${manifest.subdomain}/rest/v1`;
+    const upstreamUrl = `http://${containerName}:${port}`;
+    return { containerId, restUrl, upstreamUrl };
+  }
+
+  async deleteInstance(_projectId: string, manifest: ProjectManifest): Promise<void> {
+    const containerName = `postgrest-${manifest.slug}`;
     try {
       await execFileAsync("docker", ["rm", "-f", containerName], { windowsHide: true });
     } catch (error) {
@@ -299,20 +429,22 @@ function buildRequestOptions(
   throw new Error("Docker configuration requires CONTROL_TOWER_DOCKER_BASE_URL or CONTROL_TOWER_DOCKER_SOCKET_PATH");
 }
 
-async function createProjectKeyMaterial(secretDirectory: string, slug: string): Promise<{
+async function createProjectKeyMaterial(secretDirectory: string, slug: string, overrideSecret?: string): Promise<{
   kid: string;
   privateKeyRef: string;
+  jwtSecret: string;
+  jwtSecretRef: string;
   privateJwk: Record<string, unknown>;
-  legacySecret: string;
   legacySymmetricJwk: Record<string, unknown>;
 }> {
   const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const kid = `${slug}-${crypto.randomUUID()}`;
   const publicJwk = publicKey.export({ format: "jwk" }) as Record<string, string>;
   const privateJwk = privateKey.export({ format: "jwk" }) as Record<string, string>;
-  const legacySecret = crypto.randomBytes(32).toString("base64url");
+  const jwtSecret = overrideSecret ?? crypto.randomBytes(32).toString("base64url");
   const privateKeyRef = path.join(secretDirectory, `${slug}.private.jwk.json`);
   const publicKeyRef = path.join(secretDirectory, `${slug}.public.jwk.json`);
+  const jwtSecretRef = path.join(secretDirectory, `${slug}.jwt-secret.json`);
 
   await mkdir(secretDirectory, { recursive: true });
   await writeFile(
@@ -325,18 +457,24 @@ async function createProjectKeyMaterial(secretDirectory: string, slug: string): 
     JSON.stringify({ ...publicJwk, kid, alg: "ES256", use: "sig" }, null, 2) + "\n",
     "utf8"
   );
+  await writeFile(
+    jwtSecretRef,
+    JSON.stringify({ slug, secret: jwtSecret }, null, 2) + "\n",
+    "utf8"
+  );
 
   return {
     kid,
     privateKeyRef,
+    jwtSecret,
+    jwtSecretRef,
     privateJwk: { ...privateJwk, kid, alg: "ES256", use: "sig" },
-    legacySecret,
     legacySymmetricJwk: {
       kty: "oct",
       kid: `${kid}-legacy`,
       alg: "HS256",
       use: "sig",
-      k: Buffer.from(legacySecret, "utf8").toString("base64url")
+      k: Buffer.from(jwtSecret, "utf8").toString("base64url")
     }
   };
 }

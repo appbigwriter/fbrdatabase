@@ -12,6 +12,7 @@ import type {
   ImportReport,
   McpProjectProfile,
   MetadataSnapshot,
+  PostgrestInstanceRecord,
   ProjectManifest,
   ProjectRecord,
   RouteRecord,
@@ -21,11 +22,15 @@ import type {
   TokenRecord,
   TokenScope
 } from "./types.js";
+import type { PostgrestContext, PostgrestProvisionResult, PostgrestRuntime } from "./docker.js";
 import { MetadataRepository } from "./store.js";
 
 export interface ProvisioningDependencies {
   databaseRuntime: DatabaseRuntime;
   authRuntime: AuthRuntime;
+  postgrestRuntime?: PostgrestRuntime;
+  postgrestDbUriTemplate?: string;
+  storageUpstream?: string;
   routePublisher?: RoutePublisher;
   clock?: () => string;
   randomId?: () => string;
@@ -34,6 +39,7 @@ export interface ProvisioningDependencies {
 export interface DatabaseRuntime {
   createDatabase(projectId: string, manifest: ProjectManifest): Promise<{ host: string }>;
   createRoles(projectId: string, manifest: ProjectManifest): Promise<{ writerRole: string; readerRole: string }>;
+  createSupabaseRoles(projectId: string, manifest: ProjectManifest): Promise<{ authenticatorPassword: string }>;
   deleteDatabase(projectId: string, manifest: ProjectManifest): Promise<void>;
 }
 
@@ -41,7 +47,15 @@ export interface AuthRuntime {
   createInstance(
     projectId: string,
     manifest: ProjectManifest
-  ): Promise<{ containerId: string; authUrl: string; upstreamUrl: string; publicKeyId: string; privateKeyRef: string }>;
+  ): Promise<{
+    containerId: string;
+    authUrl: string;
+    upstreamUrl: string;
+    publicKeyId: string;
+    privateKeyRef: string;
+    jwtSecret: string;
+    jwtSecretRef: string;
+  }>;
   deleteInstance(projectId: string, manifest: ProjectManifest): Promise<void>;
 }
 
@@ -79,6 +93,7 @@ export class ProvisioningService {
       const databaseRuntime = await this.dependencies.databaseRuntime.createDatabase(project.id, manifest);
       completedSteps.push(() => this.dependencies.databaseRuntime.deleteDatabase(project.id, manifest));
       const roles = await this.dependencies.databaseRuntime.createRoles(project.id, manifest);
+      const supabaseRoles = await this.dependencies.databaseRuntime.createSupabaseRoles(project.id, manifest);
 
       const databaseRecord: DatabaseRecord = {
         projectId: project.id,
@@ -99,16 +114,47 @@ export class ProvisioningService {
         upstreamUrl: auth.upstreamUrl,
         publicKeyId: auth.publicKeyId,
         privateKeyRef: auth.privateKeyRef,
+        jwtSecretRef: auth.jwtSecretRef,
         status: "ready",
         createdAt: this.now()
       };
       await this.repository.upsertAuthInstance(authRecord);
+
+      let postgrestRecord: PostgrestInstanceRecord | null = null;
+      let restTarget: string | null = null;
+      if (this.dependencies.postgrestRuntime && this.dependencies.postgrestDbUriTemplate) {
+        const dbUri = this.dependencies.postgrestDbUriTemplate
+          .replaceAll("{databaseName}", manifest.databaseName)
+          .replaceAll("{authenticatorPassword}", supabaseRoles.authenticatorPassword);
+        const postgrestContext: PostgrestContext = {
+          dbUri,
+          jwtSecret: auth.jwtSecret,
+          dbSchema: "public",
+          anonRole: "anon"
+        };
+        const postgrest = await this.dependencies.postgrestRuntime.createInstance(project.id, manifest, postgrestContext);
+        completedSteps.push(() => this.dependencies.postgrestRuntime!.deleteInstance(project.id, manifest));
+        postgrestRecord = {
+          projectId: project.id,
+          containerId: postgrest.containerId,
+          restUrl: postgrest.restUrl,
+          upstreamUrl: postgrest.upstreamUrl,
+          dbSchema: "public",
+          anonRole: "anon",
+          status: "ready",
+          createdAt: this.now()
+        };
+        await this.repository.upsertPostgrestInstance(postgrestRecord);
+        restTarget = postgrest.upstreamUrl;
+      }
 
       const routeRecord: RouteRecord = {
         projectId: project.id,
         subdomain: manifest.subdomain,
         authTarget: auth.upstreamUrl,
         databaseTarget: databaseRecord.host,
+        restTarget,
+        storageTarget: this.dependencies.storageUpstream ?? null,
         tlsMode,
         createdAt: this.now()
       };
@@ -119,7 +165,11 @@ export class ProvisioningService {
 
       const activeProject: ProjectRecord = { ...project, status: "active", updatedAt: this.now() };
       await this.repository.upsertProject(activeProject);
-      await this.audit(project.id, "project.provision", "completed", { tokens: tokens.length });
+      await this.audit(project.id, "project.provision", "completed", {
+        tokens: tokens.length,
+        postgrest: postgrestRecord ? "ready" : "skipped",
+        storage: this.dependencies.storageUpstream ? "shared" : "skipped"
+      });
       await this.publishRoutes(project.id, manifest.subdomain);
       return activeProject;
     } catch (error) {
@@ -150,6 +200,9 @@ export class ProvisioningService {
     const manifest = snapshotToManifest(project, database);
 
     await this.audit(projectId, "project.deprovision", "started", { slug: project.slug });
+    if (this.dependencies.postgrestRuntime) {
+      await this.dependencies.postgrestRuntime.deleteInstance(projectId, manifest);
+    }
     await this.dependencies.authRuntime.deleteInstance(projectId, manifest);
     await this.dependencies.databaseRuntime.deleteDatabase(projectId, manifest);
     await this.repository.removeProject(projectId);
@@ -353,6 +406,11 @@ export class FakeDatabaseRuntime implements DatabaseRuntime {
     };
   }
 
+  async createSupabaseRoles(_projectId: string, _manifest: ProjectManifest): Promise<{ authenticatorPassword: string }> {
+    this.events.push("createSupabaseRoles");
+    return { authenticatorPassword: "fake-authenticator-password" };
+  }
+
   async deleteDatabase(projectId: string, _manifest: ProjectManifest): Promise<void> {
     this.events.push(`deleteDatabase:${projectId}`);
   }
@@ -366,7 +424,7 @@ export class FakeAuthRuntime implements AuthRuntime {
   async createInstance(
     projectId: string,
     manifest: ProjectManifest
-  ): Promise<{ containerId: string; authUrl: string; upstreamUrl: string; publicKeyId: string; privateKeyRef: string }> {
+  ): Promise<{ containerId: string; authUrl: string; upstreamUrl: string; publicKeyId: string; privateKeyRef: string; jwtSecret: string; jwtSecretRef: string }> {
     this.events.push("createInstance");
     if (this.fail) {
       throw new Error("Auth provisioning failed");
@@ -376,7 +434,35 @@ export class FakeAuthRuntime implements AuthRuntime {
       authUrl: `https://${manifest.subdomain}/auth`,
       upstreamUrl: `http://gotrue-${manifest.slug}:9999`,
       publicKeyId: `${manifest.slug}-pub`,
-      privateKeyRef: `secret://${manifest.slug}/jwt-private-key`
+      privateKeyRef: `secret://${manifest.slug}/jwt-private-key`,
+      jwtSecret: "fake-jwt-secret",
+      jwtSecretRef: `secret://${manifest.slug}/jwt-secret`
+    };
+  }
+
+  async deleteInstance(projectId: string, _manifest: ProjectManifest): Promise<void> {
+    this.events.push(`deleteInstance:${projectId}`);
+  }
+}
+
+export class FakePostgrestRuntime implements PostgrestRuntime {
+  public readonly events: string[] = [];
+
+  constructor(private readonly fail = false) {}
+
+  async createInstance(
+    projectId: string,
+    manifest: ProjectManifest,
+    _context: PostgrestContext
+  ): Promise<PostgrestProvisionResult> {
+    this.events.push(`createInstance:${projectId}`);
+    if (this.fail) {
+      throw new Error("PostgREST provisioning failed");
+    }
+    return {
+      containerId: `postgrest-${projectId}`,
+      restUrl: `https://${manifest.subdomain}/rest/v1`,
+      upstreamUrl: `http://postgrest-${manifest.slug}:3000`
     };
   }
 
