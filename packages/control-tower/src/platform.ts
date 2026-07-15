@@ -16,7 +16,8 @@ import {
 } from "./services.js";
 import { createControlTowerApp, loadControlTowerConfig } from "./config.js";
 import { PostgresClient } from "./postgres.js";
-import { createSupabaseKeySet } from "./jwt.js";
+import { createSupabaseKeySet, verifyJwt } from "./jwt.js";
+import { StorageGateway } from "./storage.js";
 import type {
   BucketRecord,
   ImportReport,
@@ -104,6 +105,67 @@ export async function getProjectApiKeys(projectId: string): Promise<ProjectApiKe
     const route = snapshot.routes.find((item) => item.projectId === projectId) ?? null;
     return buildProjectApiKeys(project, auth?.jwtSecretRef ?? "", route);
   });
+}
+
+export interface StorageRequestContext {
+  projectId: string;
+  slug: string;
+  jwtSecret: string;
+  role: "anon" | "authenticated" | "service_role" | null;
+  isServiceRole: boolean;
+  buckets: BucketRecord[];
+}
+
+export function getStorageGateway(): StorageGateway {
+  const config = loadControlTowerConfig();
+  return new StorageGateway({
+    endpoint: config.storageEndpoint,
+    region: config.storageRegion,
+    accessKey: config.storageAccessKey,
+    secretKey: config.storageSecretKey
+  });
+}
+
+export async function resolveStorageContext(host: string, authHeader?: string, apiKey?: string): Promise<StorageRequestContext | null> {
+  const subdomain = normalizeHost(host);
+  if (!subdomain) {
+    return null;
+  }
+  return withControlTowerApp(async (app) => {
+    const snapshot = await app.repository.snapshot();
+    const project = snapshot.projects.find((item) => normalizeHost(item.subdomain) === subdomain);
+    if (!project) {
+      return null;
+    }
+    const auth = snapshot.authInstances.find((item) => item.projectId === project.id);
+    const jwtSecret = await readJwtSecret(auth?.jwtSecretRef ?? "");
+    const token = apiKey ?? extractBearer(authHeader);
+    const claims = token ? verifyJwt(token, jwtSecret) : null;
+    const role = claims?.role === "service_role" ? "service_role" : claims?.role === "authenticated" ? "authenticated" : claims?.role === "anon" ? "anon" : null;
+    return {
+      projectId: project.id,
+      slug: project.slug,
+      jwtSecret,
+      role,
+      isServiceRole: claims?.role === "service_role",
+      buckets: snapshot.buckets.filter((item) => item.projectId === project.id)
+    };
+  });
+}
+
+function normalizeHost(host: string): string {
+  return String(host ?? "")
+    .split(":")[0]
+    .trim()
+    .toLowerCase();
+}
+
+function extractBearer(authHeader?: string): string | undefined {
+  const value = String(authHeader ?? "").trim();
+  if (value.toLowerCase().startsWith("bearer ")) {
+    return value.slice(7).trim();
+  }
+  return undefined;
 }
 
 async function buildProjectApiKeys(
@@ -385,11 +447,22 @@ export async function createProjectBucket(
 ) {
   const config = loadControlTowerConfig();
   return withControlTowerApp(async (app) => {
+    const snapshot = await app.repository.snapshot();
+    const project = snapshot.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error(`Project ${projectId} not found`);
+    }
     const bucket = createBucket(projectId, name, visibility, backend);
     await app.repository.upsertBucket(bucket);
-    const bucketPath = resolveBucketPath(config, projectId, bucket.name, bucket.backend);
-    await mkdir(bucketPath, { recursive: true });
-    await writeBucketMeta(bucketPath, bucket);
+
+    if (config.mode === "real" && config.storageAccessKey && config.storageSecretKey) {
+      const gateway = getStorageGateway();
+      await gateway.ensureBucket(project.slug, bucket.name, visibility === "public");
+    } else {
+      const bucketPath = resolveBucketPath(config, projectId, bucket.name, bucket.backend);
+      await mkdir(bucketPath, { recursive: true });
+      await writeBucketMeta(bucketPath, bucket);
+    }
     return bucket;
   });
 }

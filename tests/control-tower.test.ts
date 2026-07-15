@@ -12,6 +12,7 @@ import {
   MetadataRepository,
   ProvisioningService,
   RealAuthRuntime,
+  StorageGateway,
   assertIdentifier,
   buildCaddyRouteConfig,
   buildDashboard,
@@ -483,6 +484,21 @@ test("deprovisionProject removes the PostgREST instance", async () => {
 
   assert.equal(snapshot.postgrestInstances.length, 0);
   assert.match(postgrest.events.join(","), /deleteInstance/);
+});
+
+test("storage gateway isolates buckets per project slug", () => {
+  const gateway = new StorageGateway({
+    endpoint: "http://localhost:9000",
+    region: "us-east-1",
+    accessKey: "test",
+    secretKey: "test"
+  });
+  const blogImages = gateway.resolveBucketName("blog-a", "images");
+  const revistaImages = gateway.resolveBucketName("revista", "images");
+  assert.equal(blogImages.startsWith("fbr-blog-a-"), true);
+  assert.equal(revistaImages.startsWith("fbr-revista-"), true);
+  assert.notEqual(blogImages, revistaImages);
+  assert.equal(blogImages.length <= 63, true);
 });
 
 function sequenceId() {

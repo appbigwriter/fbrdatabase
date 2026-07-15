@@ -8,4 +8,5 @@ export * from "./jwt.js";
 export * from "./config.js";
 export * from "./caddy.js";
 export * from "./smoke.js";
+export * from "./storage.js";
 export * from "./platform.js";

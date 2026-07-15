@@ -44,6 +44,10 @@ export interface ControlTowerConfig {
   postgrestPort: number;
   postgrestDbUriTemplate: string;
   storageUpstream: string;
+  storageEndpoint: string;
+  storageRegion: string;
+  storageAccessKey: string;
+  storageSecretKey: string;
   secretDirectory: string;
   dockerNetworkName?: string;
   dockerHostGatewayName: string;
@@ -92,7 +96,11 @@ export function loadControlTowerConfig(env: NodeJS.ProcessEnv = process.env): Co
     postgrestDbUriTemplate:
       env.CONTROL_TOWER_POSTGREST_DB_URI_TEMPLATE ??
       "postgres://authenticator:{authenticatorPassword}@postgres:5432/{databaseName}",
-    storageUpstream: env.CONTROL_TOWER_STORAGE_UPSTREAM ?? "",
+    storageUpstream: env.CONTROL_TOWER_STORAGE_UPSTREAM ?? "http://control-tower-app:3000",
+    storageEndpoint: env.CONTROL_TOWER_STORAGE_ENDPOINT ?? "http://minio-hot:9000",
+    storageRegion: env.CONTROL_TOWER_STORAGE_REGION ?? "us-east-1",
+    storageAccessKey: env.CONTROL_TOWER_STORAGE_ACCESS_KEY ?? env.CONTROL_TOWER_MINIO_ROOT_USER ?? "",
+    storageSecretKey: env.CONTROL_TOWER_STORAGE_SECRET_KEY ?? env.CONTROL_TOWER_MINIO_ROOT_PASSWORD ?? "",
     secretDirectory: env.CONTROL_TOWER_SECRET_DIR ?? path.join(root, ".data", "secrets"),
     dockerNetworkName: env.CONTROL_TOWER_DOCKER_NETWORK_NAME,
     dockerHostGatewayName: env.CONTROL_TOWER_DOCKER_HOST_GATEWAY_NAME ?? "host.docker.internal",
